@@ -95,16 +95,16 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <U8g2lib.h>      /* aus dem Bibliotheksverwalter */
-#include <HX711.h>        /* aus dem Bibliotheksverwalter: "HX711 Arduino Library" by Bogdan Necula, Andreas Motl */
 #include <ESP32Servo.h>   /* aus dem Bibliotheksverwalter */
 #include <Preferences.h>  /* aus dem BSP von expressif, wird verfügbar wenn das richtige Board ausgewählt ist */
 
 //
 // Hier den Code auf die verwendete Hardware einstellen
 //
-#define HARDWARE_LEVEL 3        // 1 = originales Layout mit Schalter auf Pin 19/22/21
+#define HARDWARE_LEVEL 4        // 1 = originales Layout mit Schalter auf Pin 19/22/21
                                 // 2 = Layout für Heltec V2 mit Schalter auf Pin 23/19/22
                                 // 3 = Layout für Heltec V3 mit komplett anderer Pinbelegung 
+                                // 4 = basiert auf 1, mit ext Display und RS232 Waagenanbindung über uart2
 #define SERVO_ERWEITERT         // definieren, falls die Hardware mit dem alten Programmcode mit Poti aufgebaut wurde oder der Servo zu wenig fährt
                                 // Sonst bleibt der Servo in Stop-Position einige Grad offen! Nach dem Update erst prüfen!
 #define ROTARY_SCALE 2          // in welchen Schritten springt unser Rotary Encoder. 
@@ -115,9 +115,18 @@
 //#define FEHLERKORREKTUR_WAAGE   // falls Gewichtssprünge auftreten, können diese hier abgefangen werden
                                 // Achtung, kann den Wägeprozess verlangsamen. Vorher Hardware prüfen.
 //#define QUETSCHHAHN_LINKS       // Servo invertieren, falls der Quetschhahn von links geöffnet wird. Mindestens ein Exemplar bekannt
+
+// Auswahl der Waagenanbindung
+#define SCALE_HX711  1          // analoge Wägezelle(n) über HX711 (Standard)
+#define SCALE_RS232  2          // fertige Waage über RS232 (9600 8N1, 14-Byte-Frames an waage_rx_pin)
+#define SCALE_TYPE   SCALE_RS232
 //
 // Ende Benutzereinstellungen!
-// 
+//
+
+#if SCALE_TYPE == SCALE_HX711
+#include <HX711.h>        /* aus dem Bibliotheksverwalter: "HX711 Arduino Library" by Bogdan Necula, Andreas Motl */
+#endif
 
 //
 // Ab hier nur verstellen wenn Du genau weisst, was Du tust!
@@ -131,7 +140,17 @@
 
 // Ansteuerung der Waage
 #define SCALE_READS 2      // Parameter für hx711 Library. Messwert wird aus der Anzahl gemittelt
+#if SCALE_TYPE == SCALE_HX711
 #define SCALE_GETUNITS(n)  (waage_vorhanden ? round(scale.get_units(n)) : simulate_scale(n) )
+#elif SCALE_TYPE == SCALE_RS232
+long rs232_tick_and_read(int n);  // Forward-Deklaration, Implementierung weiter unten
+// Wrapper pollt immer den UART (auch wenn waage_vorhanden noch 0),
+// damit die Waage auch dann erkannt wird, wenn sie erst nach dem Boot
+// eingeschaltet wird (Hot-Plug).
+#define SCALE_GETUNITS(n)  rs232_tick_and_read(n)
+#else
+#error SCALE_TYPE muss SCALE_HX711 oder SCALE_RS232 sein
+#endif
 
 // Ansteuerung Servo
 #ifdef QUETSCHHAHN_LINKS
@@ -163,9 +182,51 @@
 // ** Definition der pins 
 // ----------------------
 
+
+//
+#if HARDWARE_LEVEL == 4
+// ESP32 Dev Board mit großen Display und RS232 Waage von US Solid
+//U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, /* clock=*/ 15, /* data=*/ 4, /* reset=*/ 16);
+// für den ESP32 Arduino core Version ≥ 2.x brauchen wir HW I2C, mit SW I2C läuft der code zu langsam
+U8G2_SSD1309_128X64_NONAME2_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE, /* clock=*/ 22, /* data=*/ 21);
+
+// Rotary Encoder
+const int outputA  = 32;
+const int outputB  = 33;
+const int outputSW = 25;
+
+// Servo
+const int servo_pin = 2;
+
+// 3x Schalter Ein 1 - Aus - Ein 2
+const int switch_betrieb_pin = 26;
+const int switch_setup_pin   = 27;
+
+// Taster
+const int button_start_pin     = 13;
+const int button_stop_pin      = 14;
+
+
+// Poti
+//const int poti_pin = 39;
+
+// Wägezelle-IC Dummy --> Remove
+const int hx711_sck_pin = 36;
+const int hx711_dt_pin  = 39;
+
+
+// Serial 232 Waage
+const int waage_rx_pin = 16;
+const int waage_tx_pin = 17;
+
+// Buzzer - aktiver Piezo
+static int buzzer_pin = 23;
+
+
 // Heltec Version 3
 //
-#if HARDWARE_LEVEL == 3
+#elif HARDWARE_LEVEL == 3
+#define USE_SW_VCC_PINS              // VCC für Schalter über GPIO zur verfügung stellen
 // OLED fuer Heltec WiFi Kit 32 (ESP32 onboard OLED) 
 //U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, /* clock=*/ 15, /* data=*/ 4, /* reset=*/ 16);
 // für den ESP32 Arduino core Version ≥ 2.x brauchen wir HW I2C, mit SW I2C läuft der code zu langsam
@@ -203,6 +264,7 @@ static int buzzer_pin = 2;
 
 
 #elif HARDWARE_LEVEL == 2
+#define USE_SW_VCC_PINS              // VCC für Schalter über GPIO zur verfügung stellen
 //
 // Heltec Version 2
 
@@ -243,6 +305,7 @@ static int buzzer_pin = 25;
 
 
 #elif HARDWARE_LEVEL == 1
+#define USE_SW_VCC_PINS              // VCC für Schalter über GPIO zur verfügung stellen
 //
 // Heltec Version 1
 
@@ -284,7 +347,11 @@ static int buzzer_pin = 25;
 
 
 Servo servo;
+#if SCALE_TYPE == SCALE_HX711
 HX711 scale;
+#elif SCALE_TYPE == SCALE_RS232
+HardwareSerial WaageSerial(2);   // ESP32 UART2
+#endif
 Preferences preferences;
 
 // Datenstrukturen für Rotary Encoder
@@ -354,14 +421,88 @@ int glastoleranz = 20;          // Gewicht für autostart darf um +-20g schwanke
 // Simuliert die Dauer des Wägeprozess, wenn keine Waage angeschlossen ist. Wirkt sich auf die Blinkfrequenz im Automatikmodus aus.
 long simulate_scale(int n) {
     long sim_gewicht = 9500;
-    while (n-- >= 1) { 
+    while (n-- >= 1) {
       delay(10);    // empirisch ermittelt. n=2: 10, n=3: 40, n=4: 50
     }
 #ifdef POTISCALE
     sim_gewicht = (map(analogRead(poti_pin), 0, 4095, 0, 700));
-#endif   
+#endif
     return sim_gewicht;
 }
+
+#if SCALE_TYPE == SCALE_RS232
+// Eingehende Frames der RS232-Waage parsen.
+// Frame-Layout (17 Byte gesamt, 15 Nutzbyte vor CR/LF):
+//   Pos 1      : Vorzeichen '+' / '-'
+//   Pos 2      : Leerzeichen
+//   Pos 3-12   : Messwert (10 Zeichen, rechtsbündig, mit Dezimalpunkt)
+//   Pos 13-15  : Einheit (3 Zeichen, linksbündig mit Space-Padding)
+//                unterstützt: "kg " (->*1000) und "g  " (nativ)
+//                alle anderen Einheiten -> Frame wird verworfen
+//   Pos 16-17  : CR + LF
+static char rs232_buf[20];               // etwas Reserve, falls die Waage doch mal mehr sendet
+static uint8_t rs232_idx = 0;
+static long   rs232_last_weight = 0;     // letzter geparster Messwert in Gramm
+static bool   rs232_frame_seen  = false; // wird true, sobald mindestens ein gültiger Frame ankam
+
+void rs232_process(void) {
+  while (WaageSerial.available() > 0) {
+    char c = (char)WaageSerial.read();
+    if (c == '\r') {
+      continue;                            // CR ignorieren, LF beendet den Frame
+    }
+    if (c == '\n') {
+      if (rs232_idx == 15) {               // 15 Nutzbytes vor CR/LF erwartet
+        // Einheit zuerst prüfen - nur "kg " und "g  " werden akzeptiert.
+        // Bei jeder anderen Einheit wird der Frame komplett verworfen
+        // (kein Update von rs232_last_weight, kein Setzen von rs232_frame_seen).
+        bool unit_kg = (rs232_buf[12] == 'K' && rs232_buf[13] == 'g');
+        bool unit_g  = (rs232_buf[12] == 'g' && rs232_buf[13] == ' ');
+//        Serial.printf("RXDATA:%.20s\n",rs232_buf);
+        if (unit_kg || unit_g) {
+          int sign = (rs232_buf[0] == '-') ? -1 : 1;
+          char num[11];
+          memcpy(num, rs232_buf + 2, 10);
+          num[10] = '\0';
+          float v = atof(num);             // toleriert führende Spaces
+          if (unit_kg) {
+            v *= 1000.0f;                  // kg -> g
+          }
+          v *= sign;
+          rs232_last_weight = (long)(v + (v >= 0 ? 0.5f : -0.5f));
+          rs232_frame_seen  = true;
+        }
+      }
+      rs232_idx = 0;
+    } else if (rs232_idx < sizeof(rs232_buf) - 1) {
+      rs232_buf[rs232_idx++] = c;
+    } else {
+      rs232_idx = 0;                       // Overrun -> Frame verwerfen
+    }
+  }
+}
+
+// Wird über das SCALE_GETUNITS-Makro aufgerufen.
+// - pollt den UART-Buffer (rs232_process)
+// - setzt waage_vorhanden = 1, sobald je ein gültiger Frame eintraf
+//   (Hot-Plug: Waage darf auch erst nach dem Boot eingeschaltet werden)
+// - liefert solange noch nichts erkannt wurde simulate_scale(n),
+//   damit Display/Menü das gleiche Verhalten zeigen wie ganz ohne Waage.
+// n (Mittelung) bleibt ungenutzt, die Waage sendet selbständig alle 100 ms.
+long rs232_tick_and_read(int n) {
+  rs232_process();
+  if (rs232_frame_seen && !waage_vorhanden) {
+    waage_vorhanden = 1;
+#ifdef isDebug
+    Serial.println("RS232-Waage nachträglich erkannt");
+#endif
+  }
+  if (waage_vorhanden) {
+    return rs232_last_weight;
+  }
+  return simulate_scale(n);
+}
+#endif
 
 #ifdef USE_ROTARY_SW
 // Rotary Taster. Der Interrupt kommt nur im Automatikmodus zum Tragen und nur wenn der Servo inaktiv ist.
@@ -998,8 +1139,10 @@ void setupCalibration(void) {
       return;
          
     if ((digitalRead(SELECT_SW)) == SELECT_PEGEL) {
+#if SCALE_TYPE == SCALE_HX711
       scale.set_scale();
       scale.tare(10);
+#endif
       delay(500);
         i = 0;
     }
@@ -1038,10 +1181,14 @@ void setupCalibration(void) {
       u8g2.setCursor(0, 44);    u8g2.print("und mit OK");
       u8g2.setCursor(0, 60);    u8g2.print("bestätigen");
       u8g2.sendBuffer();
+#if SCALE_TYPE == SCALE_HX711
       gewicht_raw  = scale.get_units(10);
       faktor       = gewicht_raw / kali_gewicht;
       scale.set_scale(faktor);
       gewicht_leer = scale.get_offset();    // Leergewicht der Waage speichern
+#else
+      gewicht_raw  = 0;                     // RS232-Waage ist extern kalibriert
+#endif
 #ifdef isDebug
       Serial.print("kalibrier_gewicht = ");
       Serial.println(kali_gewicht);
@@ -2107,6 +2254,7 @@ void setup()
   attachInterrupt(outputA, isr2, CHANGE);
 #endif
 
+#ifdef USE_SW_VCC_PINS              // VCC für Schalter über GPIO zur verfügung stellen
 // switch Vcc / GND on normal pins for convenient wiring
 // output is 3.3V for VCC
   digitalWrite (switch_vcc_pin, HIGH); 
@@ -2118,6 +2266,7 @@ void setup()
   pinMode (switch_vcc_pin, OUTPUT);
   pinMode (button_start_vcc_pin, OUTPUT);
   pinMode (button_stop_vcc_pin, OUTPUT);
+#endif
 
 // Buzzer
   pinMode(buzzer_pin, OUTPUT);
@@ -2137,6 +2286,7 @@ void setup()
   SERVO_WRITE(winkel_min);
 
 // Waage erkennen - machen wir vor dem Boot-Screen, dann hat sie 3 Sekunden Zeit zum aufwärmen
+#if SCALE_TYPE == SCALE_HX711
   scale.begin(hx711_dt_pin, hx711_sck_pin);
   if (scale.wait_ready_timeout(1000)) {               // Waage angeschlossen?
     scale.power_up();
@@ -2145,6 +2295,22 @@ void setup()
       Serial.println("Waage erkannt");
 #endif
   }
+#elif SCALE_TYPE == SCALE_RS232
+  WaageSerial.begin(9600, SERIAL_8N1, waage_rx_pin, waage_tx_pin);
+  // Auf den ersten gültigen Frame warten - die Waage sendet alle 100 ms
+  unsigned long rs232_start = millis();
+  while (millis() - rs232_start < 1500) {
+    rs232_process();
+    if (rs232_frame_seen) {
+      waage_vorhanden = 1;
+#ifdef isDebug
+      Serial.println("RS232-Waage erkannt");
+#endif
+      break;
+    }
+    delay(10);
+  }
+#endif
 
 // Boot Screen
   u8g2.setBusClock(800000);   // experimental
@@ -2159,6 +2325,7 @@ void setup()
 
 // Setup der Waage, Skalierungsfaktor setzen
   if (waage_vorhanden ==1 ) {                         // Waage angeschlossen?
+#if SCALE_TYPE == SCALE_HX711
     if ( faktor == 0 ) {                              // Vorhanden aber nicht kalibriert
       u8g2.clearBuffer();
       u8g2.setFont(u8g2_font_courB18_tf);
@@ -2176,6 +2343,12 @@ void setup()
       Serial.println("Waage initialisiert");
 #endif
     }
+#else
+    // RS232-Waage liefert bereits skalierte Werte; faktor/gewicht_leer werden nicht benötigt.
+#ifdef isDebug
+    Serial.println("RS232-Waage initialisiert");
+#endif
+#endif
   } else {                                            // Keine Waage angeschlossen
     u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_courB24_tf);
@@ -2194,13 +2367,19 @@ void setup()
   if (waage_vorhanden == 1) {
     gewicht = SCALE_GETUNITS(SCALE_READS);
     if ( (gewicht > -20) && (gewicht < 20) ) {
+#if SCALE_TYPE == SCALE_HX711
       scale.tare(10);
+#endif
       buzzer(BUZZER_SUCCESS);
 #ifdef isDebug
       Serial.print("Tara angepasst um: ");
       Serial.println(gewicht);
 #endif
+#if SCALE_TYPE == SCALE_HX711
     } else if (faktor != 0) {
+#else
+    } else {     // RS232: faktor wird nicht genutzt, Warnung trotzdem zeigen
+#endif
       u8g2.clearBuffer();
       u8g2.setFont(u8g2_font_courB18_tf);
       u8g2.setCursor( 24, 24); u8g2.print("Waage");
@@ -2215,7 +2394,9 @@ void setup()
       // Neuer Versuch, falls Gewicht entfernt wurde
       gewicht = SCALE_GETUNITS(SCALE_READS);
       if ( (gewicht > -20) && (gewicht < 20) ) {
+#if SCALE_TYPE == SCALE_HX711
         scale.tare(10);
+#endif
         buzzer(BUZZER_SUCCESS);
 #ifdef isDebug
         Serial.print("Tara angepasst um: ");
