@@ -138,17 +138,22 @@
 //#define POTISCALE             // Poti simuliert eine Wägezelle, nur für Testbetrieb!
 #define MAXIMALGEWICHT 1000     // Maximales Gewicht
 #define AUTOKORR_STABIL_MS 1000 // Mindestruhe der Waage in ms bevor der Autokorrektur-Wert gelernt wird
+#define AUTOKORR_TOLERANZ_DG 1  // ab dieser Änderung in 0,1 g gilt die Waage als unruhig (1 = jede 0,1 g), bei Flattern erhöhen
 
 // Ansteuerung der Waage
 #define SCALE_READS 2      // Parameter für hx711 Library. Messwert wird aus der Anzahl gemittelt
 #if SCALE_TYPE == SCALE_HX711
 #define SCALE_GETUNITS(n)  (waage_vorhanden ? round(scale.get_units(n)) : simulate_scale(n) )
+// Stabilitätserkennung in 0,1 g. HX711 bleibt bei ganzen Gramm, der Offset ist egal, es zählen nur Differenzen.
+#define SCALE_STABIL_DG(g) ((long)(g) * 10L)
 #elif SCALE_TYPE == SCALE_RS232
 long rs232_tick_and_read(int n);  // Forward-Deklaration, Implementierung weiter unten
 // Wrapper pollt immer den UART (auch wenn waage_vorhanden noch 0),
 // damit die Waage auch dann erkannt wird, wenn sie erst nach dem Boot
 // eingeschaltet wird (Hot-Plug).
 #define SCALE_GETUNITS(n)  rs232_tick_and_read(n)
+// Stabilitätserkennung in 0,1 g aus dem zuletzt gelesenen Frame. Ohne Tara, es zählen nur Differenzen.
+#define SCALE_STABIL_DG(g) rs232_last_weight_dg
 #else
 #error SCALE_TYPE muss SCALE_HX711 oder SCALE_RS232 sein
 #endif
@@ -444,6 +449,7 @@ long simulate_scale(int n) {
 static char rs232_buf[20];               // etwas Reserve, falls die Waage doch mal mehr sendet
 static uint8_t rs232_idx = 0;
 static long   rs232_last_weight = 0;     // letzter geparster Messwert in Gramm
+static long   rs232_last_weight_dg = 0;  // derselbe Messwert in 0,1 g, für die Stabilitätserkennung
 static bool   rs232_frame_seen  = false; // wird true, sobald mindestens ein gültiger Frame ankam
 
 void rs232_process(void) {
@@ -470,8 +476,9 @@ void rs232_process(void) {
             v *= 1000.0f;                  // kg -> g
           }
           v *= sign;
-          rs232_last_weight = (long)(v + (v >= 0 ? 0.5f : -0.5f));
-          rs232_frame_seen  = true;
+          rs232_last_weight    = (long)(v + (v >= 0 ? 0.5f : -0.5f));
+          rs232_last_weight_dg = (long)(v * 10.0f + (v >= 0 ? 0.5f : -0.5f));
+          rs232_frame_seen     = true;
         }
       }
       rs232_idx = 0;
@@ -1851,7 +1858,7 @@ void processAutomatik(void)
   int erzwinge_servo_aktiv = 0;
   boolean voll = false; //Kud
 
-  static int gewicht_vorher;                // Gewicht des vorher gefüllten Glases
+  static long gewicht_vorher_dg;            // Referenzgewicht in 0,1 g für die Stabilitätserkennung
   static unsigned long stabil_seit_ms = 0;  // Zeitstempel der letzten Gewichtsänderung
   static bool gelernt = true;               // true = Lernvorgang für aktuelles Glas erledigt
 
@@ -1864,7 +1871,6 @@ void processAutomatik(void)
      tara_glas = 0;
      rotary_select = SW_WINKEL;    // Einstellung für Winkel über Rotary
      initRotaries(SW_MENU, fmenge_index, 0, 4, 1);
-     gewicht_vorher = glaeser[fmenge_index].Gewicht + korrektur;
 //     autokorrektur_gr = 0;
   }
 
@@ -1951,7 +1957,6 @@ void processAutomatik(void)
       tara_glas   = gewicht;
 #ifdef isDebug 
       Serial.print("gewicht: ");            Serial.print(gewicht);
-      Serial.print(" gewicht_vorher: ");    Serial.print(gewicht_vorher);
       Serial.print(" zielgewicht: ");       Serial.print(fmenge + korrektur + tara_glas + autokorrektur_gr);
       Serial.print(" kulanz: ");            Serial.print(kulanz_gr);
       Serial.print(" Autokorrektur: ");     Serial.println(autokorrektur_gr);
@@ -1974,8 +1979,9 @@ void processAutomatik(void)
        && !gelernt                                        // tropfmenge noch nicht erfasst
        ) {
     voll = true;//Kud
-    if ( gewicht != gewicht_vorher ) {                    // Gewicht ändert sich noch -> Timer neu starten
-      gewicht_vorher = gewicht;
+    long gewicht_dg = SCALE_STABIL_DG(gewicht);
+    if ( labs(gewicht_dg - gewicht_vorher_dg) >= AUTOKORR_TOLERANZ_DG ) {  // Gewicht ändert sich noch -> Timer neu starten
+      gewicht_vorher_dg = gewicht_dg;
       stabil_seit_ms = millis();
     } else if ( (millis() - stabil_seit_ms) >= AUTOKORR_STABIL_MS ) {  // lange genug stabil -> autokorrektur bestimmen
       autokorrektur_gr = (fmenge + kulanz_gr + tara_glas) - (gewicht - autokorrektur_gr);
@@ -1999,7 +2005,8 @@ void processAutomatik(void)
 #ifdef isDebug
       Serial.print("Nachtropfen:");
       Serial.print(" gewicht: ");        Serial.print(gewicht);
-      Serial.print(" gewicht_vorher: "); Serial.print(gewicht_vorher);
+      Serial.print(" gewicht_dg: ");     Serial.print(SCALE_STABIL_DG(gewicht));
+      Serial.print(" gewicht_vorher_dg: "); Serial.print(gewicht_vorher_dg);
       Serial.print(" stabil_ms: ");      Serial.print(millis() - stabil_seit_ms);
       Serial.print(" Korrektur: ");      Serial.println(autokorrektur_gr);
       Serial.print(" Zähler Trip: ");    Serial.print(glaeser[fmenge_index].TripCount); //Kud
@@ -2042,7 +2049,7 @@ void processAutomatik(void)
     if ( autostart != 1 )       // autostart ist nicht aktiv, kein weiterer Start
       auto_aktiv = 0;
     if ( autokorrektur == 1 ) { // autokorrektur, gewicht merken und Stabilitäts-Timer ab Hahn-zu starten
-      gewicht_vorher = gewicht;
+      gewicht_vorher_dg = SCALE_STABIL_DG(gewicht);
       stabil_seit_ms = millis();
     }
     buzzer(BUZZER_SHORT);
