@@ -1958,7 +1958,6 @@ void processAutomatik(void)
 #endif      
       servo_aktiv = 1;
       gelernt = false;
-      stabil_seit_ms = millis();
       voll = false; //Kud
       gezaehlt = false; //Kud
       buzzer(BUZZER_SHORT);
@@ -2042,8 +2041,10 @@ void processAutomatik(void)
     }
     if ( autostart != 1 )       // autostart ist nicht aktiv, kein weiterer Start
       auto_aktiv = 0;
-    if ( autokorrektur == 1 )   // autokorrektur, gewicht merken
+    if ( autokorrektur == 1 ) { // autokorrektur, gewicht merken und Stabilitäts-Timer ab Hahn-zu starten
       gewicht_vorher = gewicht;
+      stabil_seit_ms = millis();
+    }
     buzzer(BUZZER_SHORT);
   }
   
@@ -2116,7 +2117,7 @@ void processAutomatik(void)
   
     u8g2.drawFrame(0, 50, 128, 14 );
     u8g2.drawBox  (0, 50, progressbar, 14 );
-  } 
+  }
   else
   {
     if( autokorrektur == 1 ){
