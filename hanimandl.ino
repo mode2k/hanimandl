@@ -137,6 +137,7 @@
                                 // ACHTUNG: zu viel Serieller Output kann einen ISR-Watchdog Reset auslösen!
 //#define POTISCALE             // Poti simuliert eine Wägezelle, nur für Testbetrieb!
 #define MAXIMALGEWICHT 1000     // Maximales Gewicht
+#define AUTOKORR_STABIL_MS 1000 // Mindestruhe der Waage in ms bevor der Autokorrektur-Wert gelernt wird
 
 // Ansteuerung der Waage
 #define SCALE_READS 2      // Parameter für hx711 Library. Messwert wird aus der Anzahl gemittelt
@@ -1850,8 +1851,9 @@ void processAutomatik(void)
   int erzwinge_servo_aktiv = 0;
   boolean voll = false; //Kud
 
-  static int gewicht_vorher;    // Gewicht des vorher gefüllten Glases
-  static int sammler_num = 5;   // Anzahl identischer Messungen für Nachtropfen
+  static int gewicht_vorher;                // Gewicht des vorher gefüllten Glases
+  static unsigned long stabil_seit_ms = 0;  // Zeitstempel der letzten Gewichtsänderung
+  static bool gelernt = true;               // true = Lernvorgang für aktuelles Glas erledigt
 
   if ( modus != MODE_AUTOMATIK ) {
      modus = MODE_AUTOMATIK;
@@ -1955,7 +1957,8 @@ void processAutomatik(void)
       Serial.print(" Autokorrektur: ");     Serial.println(autokorrektur_gr);
 #endif      
       servo_aktiv = 1;
-      sammler_num = 0;
+      gelernt = false;
+      stabil_seit_ms = millis();
       voll = false; //Kud
       gezaehlt = false; //Kud
       buzzer(BUZZER_SHORT);
@@ -1969,15 +1972,13 @@ void processAutomatik(void)
     if ( (auto_aktiv == 1)                                // Automatik ist aktiviert
        && (servo_aktiv == 0 ) && (winkel == winkel_min)   // Hahn ist geschlossen
        && (gewicht >= zielgewicht )                       // Glas ist voll
-       && (sammler_num <= 5)                              // tropfmenge noch nicht erfasst
-       ) {     
-    voll = true;//Kud                          
-    if ( (gewicht == gewicht_vorher) && (sammler_num < 5) ) {   // wir wollen 5x das identische Gewicht sehen  
-      sammler_num++;
-    } else if ( gewicht != gewicht_vorher ) {             // sonst gewichtsänderung nachführen
+       && !gelernt                                        // tropfmenge noch nicht erfasst
+       ) {
+    voll = true;//Kud
+    if ( gewicht != gewicht_vorher ) {                    // Gewicht ändert sich noch -> Timer neu starten
       gewicht_vorher = gewicht;
-      sammler_num = 0;
-    } else if ( sammler_num == 5 ) {                      // gewicht ist 5x identisch, autokorrektur bestimmen
+      stabil_seit_ms = millis();
+    } else if ( (millis() - stabil_seit_ms) >= AUTOKORR_STABIL_MS ) {  // lange genug stabil -> autokorrektur bestimmen
       autokorrektur_gr = (fmenge + kulanz_gr + tara_glas) - (gewicht - autokorrektur_gr);
       if ( korrektur + autokorrektur_gr > kulanz_gr ) {   // Autokorrektur darf nicht überkorrigieren, max Füllmenge plus Kulanz
         autokorrektur_gr = kulanz_gr - korrektur;
@@ -1987,7 +1988,7 @@ void processAutomatik(void)
 #endif
       }
       buzzer(BUZZER_SUCCESS);
-      sammler_num++;                                      // Korrekturwert für diesen Durchlauf erreicht
+      gelernt = true;                                     // Korrekturwert für diesen Durchlauf erreicht
     }
 
     if ((voll == true) && (gezaehlt == false)) { //Kud
@@ -2000,7 +2001,7 @@ void processAutomatik(void)
       Serial.print("Nachtropfen:");
       Serial.print(" gewicht: ");        Serial.print(gewicht);
       Serial.print(" gewicht_vorher: "); Serial.print(gewicht_vorher);
-      Serial.print(" sammler_num: ");    Serial.print(sammler_num);
+      Serial.print(" stabil_ms: ");      Serial.print(millis() - stabil_seit_ms);
       Serial.print(" Korrektur: ");      Serial.println(autokorrektur_gr);
       Serial.print(" Zähler Trip: ");    Serial.print(glaeser[fmenge_index].TripCount); //Kud
       Serial.print(" Zähler: ");         Serial.println(glaeser[fmenge_index].Count); //Kud
