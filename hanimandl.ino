@@ -114,7 +114,7 @@
 //#define USE_POTI              // Poti benutzen -> ACHTUNG, im Normalfall auch USE_ROTARY_SW deaktivieren!
 //#define FEHLERKORREKTUR_WAAGE   // falls Gewichtssprünge auftreten, können diese hier abgefangen werden
                                 // Achtung, kann den Wägeprozess verlangsamen. Vorher Hardware prüfen.
-//#define QUETSCHHAHN_LINKS       // Servo invertieren, falls der Quetschhahn von links geöffnet wird. Mindestens ein Exemplar bekannt
+#define QUETSCHHAHN_LINKS       // Servo invertieren, falls der Quetschhahn von links geöffnet wird. Mindestens ein Exemplar bekannt
 
 // Auswahl der Waagenanbindung
 #define SCALE_HX711  1          // analoge Wägezelle(n) über HX711 (Standard)
@@ -402,7 +402,7 @@ int autokorrektur;              // Autokorrektur ein/aus
 int kulanz_gr;                  // gewollte Überfüllung im Autokorrekturmodus in Gramm
 int winkel;                     // aktueller Servo-Winkel
 int winkel_hard_min = 0;        // Hard-Limit für Servo
-int winkel_hard_max = 180;      // Hard-Limit für Servo
+int winkel_hard_max = 250;      // Hard-Limit für Servo
 int winkel_min = 0;             // konfigurierbar im Setup
 int winkel_max = 85;            // konfigurierbar im Setup
 int winkel_fein = 35;           // konfigurierbar im Setup
