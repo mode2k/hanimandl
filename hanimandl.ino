@@ -2118,6 +2118,14 @@ void processAutomatik(void)
     u8g2.drawFrame(0, 50, 128, 14 );
     u8g2.drawBox  (0, 50, progressbar, 14 );
   }
+  else if ( (autokorrektur == 1) && (auto_aktiv == 1) && !gelernt && (gewicht >= zielgewicht) ) {
+    // Nachtropfen: dünne Linie füllt sich bis AUTOKORR_STABIL_MS, springt bei Gewichtsänderung zurück
+    long stabilbar = (128L * (long)(millis() - stabil_seit_ms)) / AUTOKORR_STABIL_MS;
+    stabilbar = constrain(stabilbar, 0, 128);
+
+    u8g2.drawFrame(0, 55, 128, 4 );
+    u8g2.drawBox  (0, 55, stabilbar, 4 );
+  }
   else
   {
     if( autokorrektur == 1 ){
